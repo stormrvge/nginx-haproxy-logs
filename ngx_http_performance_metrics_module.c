@@ -120,52 +120,40 @@ static void log_performance_metrics(ngx_http_request_t *r) {
     ngx_msec_int_t response_time;
     ngx_int_t duration;
     ngx_uint_t response_code;
-    ngx_str_t server_addr;
-    ngx_int_t server_port;
     ngx_file_t file;
     ngx_int_t rc;
     u_char buf[256], *p;
     ngx_chain_t out;
-    ngx_connection_t *c = r->connection;
+
+    ngx_http_upstream_t *u;
+    ngx_str_t upstream_addr;
 
     pmcf = ngx_http_get_module_loc_conf(r, ngx_http_performance_metrics_module);
     if (!pmcf->enable) {
         return;
     }
 
-    if (c->sockaddr->sa_family == AF_INET) {
-        struct sockaddr_in *sin = (struct sockaddr_in *) c->sockaddr;
-        server_port = ntohs(sin->sin_port);
-        server_addr.data = (u_char *) ngx_palloc(r->pool, INET_ADDRSTRLEN);
-        if (server_addr.data == NULL) {
-            return;
-        }
-        ngx_inet_ntop(AF_INET, &sin->sin_addr, server_addr.data, INET_ADDRSTRLEN);
-        server_addr.len = ngx_strlen(server_addr.data);
-    } else if (c->sockaddr->sa_family == AF_INET6) {
-        struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *) c->sockaddr;
-        server_port = ntohs(sin6->sin6_port);
-        server_addr.data = (u_char *) ngx_palloc(r->pool, INET6_ADDRSTRLEN);
-        if (server_addr.data == NULL) {
-            return;
-        }
-        ngx_inet_ntop(AF_INET6, &sin6->sin6_addr, server_addr.data, INET6_ADDRSTRLEN);
-        server_addr.len = ngx_strlen(server_addr.data);
-    } else {
-        server_port = 0;
-        server_addr.len = 0;
-    }
 
-    if (server_addr.len > 0) {
-        server_addr.data[server_addr.len++] = ':';
-        server_addr.len += ngx_sprintf(server_addr.data + server_addr.len, "%ui", server_port) - server_addr.data;
-    }
+ngx_time_t *tp = ngx_timeofday();
+ngx_msec_t current_msec = (ngx_msec_t) (tp->sec * 1000 + tp->msec);
+response_time = (ngx_msec_int_t) (current_msec - r->start_msec);
 
-    response_time = (ngx_msec_int_t) (ngx_timeofday()->msec - r->start_msec);
-    duration = (ngx_int_t) (ngx_time() - r->start_sec);
+ngx_msec_t request_time = (ngx_msec_t) (r->start_sec * 1000 + r->start_msec);
+
+// Correct the duration calculation
+duration = (ngx_int_t) (current_msec - request_time);
     response_code = r->headers_out.status;
 
-    p = ngx_snprintf(buf, sizeof(buf), "%V,%i,%i,%ui\n", &server_addr, response_time, duration, response_code);
+    u = r->upstream;
+    if (u && u->peer.name) {
+        upstream_addr.data = u->peer.name->data;
+        upstream_addr.len = u->peer.name->len;
+    } else {
+        upstream_addr.data = (u_char *) "-";
+        upstream_addr.len = 1;
+    }
+
+    p = ngx_snprintf(buf, sizeof(buf), "%i,%i,%i,%ui,%V\n", request_time, response_time, duration, response_code, &upstream_addr);
 
     ngx_memzero(&file, sizeof(ngx_file_t));
     file.name = pmcf->output_file;
